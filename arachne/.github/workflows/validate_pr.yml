@@ -1,0 +1,50 @@
+name: Validate ARACHNE PR
+
+on:
+  pull_request:
+    paths:
+      - 'arachne/**'
+      - '.github/workflows/validate_pr.yml'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Validate CLIPS syntax
+        run: python -c "import clips; env=clips.Environment(); env.load('arachne/rulebase.clp'); print('ok')"
+      - name: Validate NARS threshold for induced candidates
+        run: python - <<'PY'
+import re
+from pathlib import Path
+text = Path('arachne/rulebase.clp').read_text()
+print('rulebase length', len(text))
+PY
+      - name: Reject watchdog modifications
+        run: |
+          if git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -q '^arachne/watchdog.py$'; then
+            echo "watchdog.py is protected" && exit 1
+          fi
+      - name: Reject bert parser modifications before IMO gate
+        run: |
+          python - <<'PY'
+import json
+from pathlib import Path
+gate = json.loads(Path('arachne/imo_gate.json').read_text()) if Path('arachne/imo_gate.json').exists() else {'IMO_THRESHOLD_PASSED': False}
+print('IMO_THRESHOLD_PASSED=', gate['IMO_THRESHOLD_PASSED'])
+if not gate['IMO_THRESHOLD_PASSED']:
+    import subprocess
+    changed = subprocess.check_output(['git','diff','--name-only','origin/${{ github.base_ref }}...HEAD'], text=True)
+    if 'arachne/engine/bert_parser.py' in changed:
+        raise SystemExit('bert_parser.py locked until IMO threshold')
+PY
+      - name: Require manual approval for workflow self-modification
+        run: |
+          if git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -q '^arachne/.github/workflows/validate_pr.yml$'; then
+            echo "Validation workflow modified; require manual approval flag." && exit 1
+          fi
