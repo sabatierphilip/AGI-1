@@ -7,3 +7,5 @@ nltk==3.9.1
 PyYAML==6.0.2
 huggingface-hub>=0.23.0
 safetensors>=0.4.0
+
+# HF model preload target: typeform/distilbart-mnli-12-3

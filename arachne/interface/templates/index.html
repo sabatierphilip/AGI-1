@@ -17,12 +17,22 @@
       <div id="input-row">
         <input id="chat-input" placeholder="Enter message — ARACHNE is listening" />
         <button id="send">Send</button>
+        <button id="paste-btn" title="Paste a passage for bulk ingestion">⬇ Ingest</button>
+      </div>
+      <div id="paste-area" class="hidden">
+        <textarea id="paste-input" placeholder="Paste any passage here — ARACHNE will extract all facts and relationships..."></textarea>
+        <button id="ingest-submit">Ingest Passage</button>
+        <button id="ingest-cancel">Cancel</button>
       </div>
     </section>
     <section id="right-panel">
       <div id="rule-panel">
-        <h3 id="rule-header">LIVE RULE BASE <span class="dot pulse"></span></h3>
+        <div id="rule-header-row">
+          <h3 id="rule-header">LIVE RULE BASE <span class="dot pulse"></span></h3>
+          <button id="graph-tab">Graph</button>
+        </div>
         <ul id="rule-list"></ul>
+        <div id="graph-view" class="hidden"><svg id="graph-svg"></svg></div>
       </div>
       <div id="telemetry-panel">
         <div id="stats-grid">
@@ -31,11 +41,13 @@
           <div class="stat"><label>SOURCES ACTIVE</label><strong id="sources-active">0</strong></div>
           <div class="stat"><label>WATCHDOG</label><strong id="watchdog">0s</strong></div>
         </div>
+        <div id="analytics-panel"></div>
         <div id="induction-log"></div>
       </div>
     </section>
   </div>
   <div id="status-bar"><span>ARACHNE v1.0 | CLIPS+NARS+ILP+BERT</span><span id="connection"></span></div>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

@@ -5,9 +5,32 @@ from pathlib import Path
 
 
 def _bootstrap() -> None:
+    import importlib
+    import subprocess
+    import sys
+
+    # Install system build dependencies first — needed for clipspy on Python 3.12
+    try:
+        subprocess.check_call(
+            [
+                "sudo",
+                "apt-get",
+                "install",
+                "-y",
+                "-qq",
+                "build-essential",
+                "libffi-dev",
+                "python3-dev",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass  # not on apt system, continue
+
+    # Core packages excluding clipspy
     required = {
         "flask": "Flask==3.0.3",
-        "clips": "clipspy==1.0.0",
         "transformers": "transformers==4.43.4",
         "torch": "torch==2.3.1",
         "requests": "requests==2.32.3",
@@ -23,9 +46,39 @@ def _bootstrap() -> None:
         except ImportError:
             missing.append(package)
     if missing:
-        print(f"[ARACHNE] Installing {len(missing)} missing packages...")
+        print(f"[ARACHNE] Installing {len(missing)} packages...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", *missing])
-        print("[ARACHNE] Dependencies ready.")
+
+    # Install clipspy with multi-strategy fallback for Python 3.12 Codespaces
+    try:
+        importlib.import_module("clips")
+        return
+    except ImportError:
+        pass
+
+    print("[ARACHNE] Installing clipspy...")
+    strategies = [
+        # Strategy 1: no-build-isolation fixes clips.h lookup on Python 3.12
+        [sys.executable, "-m", "pip", "install", "--quiet", "--no-build-isolation", "clipspy==1.0.0"],
+        # Strategy 2: older version with prebuilt wheel
+        [sys.executable, "-m", "pip", "install", "--quiet", "clipspy==0.1.1"],
+        # Strategy 3: latest available
+        [sys.executable, "-m", "pip", "install", "--quiet", "clipspy"],
+    ]
+    for cmd in strategies:
+        try:
+            subprocess.check_call(cmd)
+            importlib.import_module("clips")
+            print("[ARACHNE] clipspy installed successfully.")
+            return
+        except Exception:
+            continue
+
+    print("[ARACHNE] FATAL: Could not install clipspy on any strategy.")
+    print(
+        "Manual fix: sudo apt-get install build-essential libffi-dev && pip install clipspy --no-build-isolation"
+    )
+    sys.exit(1)
 
 
 _bootstrap()
@@ -74,6 +127,7 @@ class ArachneState:
         self.sources_active = ["wikidata", "conceptnet", "wordnet"]
         self.watchdog_seconds = 7200
         self.new_rule_flash = 0
+        self._start_time = time.time()
         self._start_ilp()
 
     def _start_ilp(self) -> None:
@@ -280,13 +334,22 @@ def _ensure_readme() -> None:
 
 def _print_banner(state: ArachneState, watchdog_pid: int) -> None:
     snap = state.snapshot()
-    print("┌──────────────────────────────────────────────────────────────┐")
-    print("│ ARACHNE v1.0 Startup                                         │")
-    print(f"│ rules loaded: {snap['rule_count']:<47}│")
-    print(f"│ sources connected: {','.join(state.sources_active):<41}│")
-    print(f"│ watchdog pid: {watchdog_pid:<48}│")
-    print("│ url: http://localhost:5000                                   │")
-    print("└──────────────────────────────────────────────────────────────┘")
+    induced = len([r for r in snap["rules"] if r["name"].startswith("induced-")])
+    seeded = snap["rule_count"] - induced
+    print("")
+    print("╔══════════════════════════════════════════════════════════════════╗")
+    print("║                    ARACHNE v1.0  ONLINE                         ║")
+    print("╠══════════════════════════════════════════════════════════════════╣")
+    print(f"║  Rules loaded    : {snap['rule_count']:<46}║")
+    print(f"║  Pre-seeded      : {seeded:<46}║")
+    print(f"║  Induced (learned): {induced:<45}║")
+    print(f"║  Sources active  : {','.join(state.sources_active):<46}║")
+    print(f"║  Watchdog PID    : {watchdog_pid:<46}║")
+    print(f"║  Interface       : http://localhost:5000{'':<26}║")
+    print("╠══════════════════════════════════════════════════════════════════╣")
+    print("║  CLIPS + NARS + ILP + BERT  |  Self-modifying symbolic AGI      ║")
+    print("╚══════════════════════════════════════════════════════════════════╝")
+    print("")
 
 
 def main() -> None:

@@ -8,6 +8,21 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Set, Tuple
 
 
+KNOWN_INVERSES = {
+    "causes": "caused-by",
+    "requires": "required-by",
+    "enables": "enabled-by",
+    "prevents": "prevented-by",
+    "before": "after",
+    "after": "before",
+    "part-of": "contains",
+    "contains": "part-of",
+    "is-a": "has-instance",
+    "teaches": "learns-from",
+    "supports": "supported-by",
+}
+
+
 @dataclass
 class InductionEvent:
     signature: str
@@ -316,6 +331,48 @@ class ILPEngine:
                     f"  (assert (conclusion (text \"{predicate}-observed\") (trace-id \"{name}\"))))"
                 )
                 candidates.append((name, rule))
+
+        if predicate in KNOWN_INVERSES and support >= 4:
+            inverse = KNOWN_INVERSES[predicate]
+            sig = f"inverse:{predicate}:{inverse}:{support}"
+            name = f"induced-inverse-{self._hash(sig)}"
+            rule = (
+                f"(defrule {name}\n"
+                f"  (relation (subject ?a) (predicate \"{predicate}\") (object ?b) (confidence ?c))\n"
+                f"  =>\n"
+                f"  (assert (relation (subject ?b) (predicate \"{inverse}\") (object ?a) (confidence (* ?c 0.85)))))"
+            )
+            candidates.append((name, rule))
+
+        if len({s for s, _ in pairs}) >= 3 and len({o for _, o in pairs}) == 1:
+            # Multiple subjects, same object — they are analogously related
+            common_obj = list({o for _, o in pairs})[0]
+            safe_obj = common_obj.replace('"', '').replace('\\', '')
+            sig = f"analogy-same-target:{predicate}:{safe_obj}:{support}"
+            name = f"induced-analogy-{self._hash(sig)}"
+            rule = (
+                f"(defrule {name}\n"
+                f"  (relation (subject ?x) (predicate \"{predicate}\") (object \"{safe_obj}\") (confidence ?c1))\n"
+                f"  (relation (subject ?y) (predicate \"{predicate}\") (object \"{safe_obj}\") (confidence ?c2))\n"
+                f"  (test (neq ?x ?y))\n"
+                f"  =>\n"
+                f"  (assert (relation (subject ?x) (predicate \"analogous-to\") (object ?y) (confidence 0.58))))"
+            )
+            candidates.append((name, rule))
+
+        if len({o for _, o in pairs}) >= 3 and len({s for s, _ in pairs}) == 1:
+            # One subject, many objects — subject is a hub
+            common_subj = list({s for s, _ in pairs})[0]
+            safe_subj = common_subj.replace('"', '').replace('\\', '')
+            sig = f"hub-entity:{predicate}:{safe_subj}:{support}"
+            name = f"induced-hub-{self._hash(sig)}"
+            rule = (
+                f"(defrule {name}\n"
+                f"  (relation (subject \"{safe_subj}\") (predicate \"{predicate}\") (object ?x) (confidence ?c))\n"
+                f"  =>\n"
+                f"  (assert (self-state (key \"hub-entity\") (value \"{safe_subj}\"))))\n"
+            )
+            candidates.append((name, rule))
 
         for rule_name, rule_text in candidates:
             if self._rule_exists(rule_name):

@@ -4,6 +4,12 @@ from typing import Dict, List
 
 
 class Verbalizer:
+    INTENT_OPENERS = {
+        "QUERY": "Based on my knowledge: ",
+        "ASSERT": "Understood. I've recorded that ",
+        "CONTRADICT": "I'm noting a potential conflict: ",
+    }
+
     def __init__(self) -> None:
         self.predicate_phrases = {
             "is-a": "is a type of",
@@ -76,9 +82,9 @@ class Verbalizer:
 
         # Stage 2: relation fact synthesis for query/assert/unknown intents.
         if intent in ("QUERY", "ASSERT", "UNKNOWN") and not output:
-            synthesized = self._synthesize_from_facts(facts or [], original_text)
-            if synthesized:
-                output.append({"message": self._with_opener(synthesized, intent), "trace": "relation-synthesis"})
+            narrative = self._build_narrative(facts or [], intent, original_text)
+            if narrative:
+                output.append({"message": narrative, "trace": "relation-synthesis"})
 
         # Stage 4: intent-aware meaningful fallbacks.
         if not output:
@@ -107,44 +113,42 @@ class Verbalizer:
         }
         return f"{openers.get(intent, '')}{text}" if intent in openers else text
 
-    def _synthesize_from_facts(self, facts: List[Dict[str, str]], original_text: str) -> str:
-        relations = [f for f in facts if f.get("text", "").startswith("(relation")]
-        if not relations:
+    def _build_narrative(
+        self, facts: List[Dict[str, str]], intent: str, original_text: str
+    ) -> str:
+        from collections import defaultdict
+
+        by_subject: dict = defaultdict(list)
+        for f in facts:
+            txt = f.get("text", "")
+            subj = self._slot(txt, "subject")
+            pred = self._slot(txt, "predicate")
+            obj = self._slot(txt, "object")
+            if subj and pred and obj and subj != "unknown" and pred != "unknown" and obj != "unknown":
+                phrase = self.predicate_phrases.get(pred, pred.replace("-", " "))
+                by_subject[subj].append((phrase, obj))
+
+        if not by_subject:
             return ""
 
-        q = original_text.lower().strip(" ?")
-        focused = []
+        sentences = []
+        for subj, relations in list(by_subject.items())[:3]:
+            if len(relations) == 1:
+                phrase, obj = relations[0]
+                sentences.append(f"{subj} {phrase} {obj}")
+            elif len(relations) == 2:
+                p1, o1 = relations[0]
+                p2, o2 = relations[1]
+                sentences.append(f"{subj} {p1} {o1} and {p2} {o2}")
+            else:
+                parts = [f"{p} {o}" for p, o in relations[:3]]
+                sentences.append(f"{subj} {parts[0]}, {parts[1]}, and {parts[2]}")
 
-        for fact in reversed(relations):
-            text = fact.get("text", "")
-            subj = self._slot(text, "subject")
-            obj = self._slot(text, "object")
-            if q and (
-                subj.lower() in q
-                or obj.lower() in q
-                or any(word in q for word in subj.lower().split("-"))
-                or any(word in q for word in obj.lower().split("-"))
-            ):
-                focused.append((subj, self._slot(text, "predicate"), obj))
-            elif not q:
-                focused.append((subj, self._slot(text, "predicate"), obj))
-            if len(focused) >= 4:
-                break
+        if not sentences:
+            return ""
 
-        if not focused:
-            for fact in reversed(relations[-4:]):
-                text = fact.get("text", "")
-                focused.append((
-                    self._slot(text, "subject"),
-                    self._slot(text, "predicate"),
-                    self._slot(text, "object"),
-                ))
-
-        parts = []
-        for s, p, o in focused:
-            phrase = self.predicate_phrases.get(p, p.replace("-", " "))
-            parts.append(f"{s} {phrase} {o}")
-        return "; ".join(parts) + "."
+        opener = self.INTENT_OPENERS.get(intent, "")
+        return opener + ". ".join(sentences) + "."
 
     @staticmethod
     def _slot(text: str, slot: str) -> str:
