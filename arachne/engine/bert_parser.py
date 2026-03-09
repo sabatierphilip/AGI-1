@@ -8,6 +8,7 @@ from transformers import pipeline
 
 
 INTENTS = ["QUERY", "ASSERT", "CONTRADICT", "CLARIFY", "UNKNOWN"]
+KNOWN_TERMS = {"arachne", "clips", "nars", "ilp", "bert", "watchdog", "rulebase"}
 
 
 @dataclass
@@ -19,13 +20,27 @@ class ParseResult:
 
 class BertParser:
     def __init__(self) -> None:
-        self.ner = pipeline("ner", model="dslim/bert-base-NER", aggregation_strategy="simple")
+        self.ner = None
+        try:
+            self.ner = pipeline("ner", model="dslim/bert-base-NER", aggregation_strategy="simple")
+        except Exception as exc:
+            print(f"[WARN] BERT NER unavailable, using regex parser fallback: {exc}")
 
     def parse(self, text: str) -> ParseResult:
         intent = self._intent(text)
-        entities = [e["word"] for e in self.ner(text)]
+        entities = self._extract_entities(text)
         triples = self._extract_triples(text, entities)
         return ParseResult(intent=intent, entities=entities, triples=triples)
+
+    def _extract_entities(self, text: str) -> List[str]:
+        if self.ner is not None:
+            try:
+                return [e["word"] for e in self.ner(text)]
+            except Exception as exc:
+                print(f"[WARN] BERT inference failed, using regex entities: {exc}")
+        caps = re.findall(r"\b[A-Z][A-Za-z0-9_\-]*\b", text)
+        domain = [w for w in re.findall(r"\b[a-zA-Z][A-Za-z0-9_\-]*\b", text) if w.lower() in KNOWN_TERMS]
+        return list(dict.fromkeys(caps + domain))
 
     def _intent(self, text: str) -> str:
         lowered = text.lower().strip()

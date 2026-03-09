@@ -12,11 +12,16 @@ IMO_PROBLEMS = [
 ]
 
 
-def run_imo_suite(score_fn) -> float:
+def run_imo_suite(state) -> float:
+    if state is None:
+        return 0.0
     correct = 0
     for p in IMO_PROBLEMS:
-        result = score_fn(p["prompt"])
-        if bool(result) == p["expected"]:
+        result = state.handle_message(p["prompt"])
+        messages = " ".join(m.get("message", "") for m in result.get("messages", []))
+        lowered = messages.lower()
+        is_positive = not any(t in lowered for t in ["not", "false", "contradict", "insufficient"])
+        if bool(is_positive) == p["expected"]:
             correct += 1
     return correct / len(IMO_PROBLEMS)
 

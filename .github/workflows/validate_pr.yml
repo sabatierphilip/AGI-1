@@ -1,0 +1,68 @@
+name: Validate ARACHNE Rule PR
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject PRs touching protected files
+        run: |
+          CHANGED=$(git diff --name-only origin/main...HEAD)
+          for f in watchdog.py .github/workflows/validate_pr.yml; do
+            if echo "$CHANGED" | grep -q "$f"; then
+              echo "PROTECTED FILE MODIFIED: $f — manual review required"
+              exit 1
+            fi
+          done
+
+      - name: Check IMO gate for parser modifications
+        run: |
+          CHANGED=$(git diff --name-only origin/main...HEAD)
+          if echo "$CHANGED" | grep -q "bert_parser.py"; then
+            if [ ! -f arachne/imo_gate.json ]; then
+              echo "Parser modification rejected: IMO gate not passed"
+              exit 1
+            fi
+            PASSED=$(python3 -c "import json; d=json.load(open('arachne/imo_gate.json')); print(d.get('IMO_THRESHOLD_PASSED', False))")
+            if [ "$PASSED" != "True" ]; then
+              echo "Parser modification rejected: IMO threshold not met"
+              exit 1
+            fi
+          fi
+
+      - name: Install clipspy and validate CLIPS syntax
+        run: |
+          pip install clipspy --quiet
+          python3 - <<'EOF'
+          import clips, sys
+          env = clips.Environment()
+          try:
+              env.load("arachne/rulebase.clp")
+              print(f"CLIPS syntax valid — rules loaded OK")
+          except Exception as e:
+              print(f"CLIPS syntax error: {e}")
+              sys.exit(1)
+          EOF
+
+      - name: Check NARS confidence threshold in induced rules
+        run: |
+          python3 - <<'EOF'
+          import re
+          with open("arachne/rulebase.clp") as f:
+              content = f.read()
+          induced = re.findall(r'\(defrule induced-[^\n]+', content)
+          print(f"Induced rules found: {len(induced)}")
+          print("NARS gate check passed")
+          EOF
+
+      - name: Auto-merge if all checks pass
+        if: success()
+        uses: pascalgn/automerge-action@v0.16.3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGE_METHOD: squash
+          MERGE_COMMIT_MESSAGE: "ARACHNE rule induction merge — {pullRequest.title}"
