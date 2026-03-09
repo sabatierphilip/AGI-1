@@ -74,8 +74,8 @@ class Verbalizer:
             if text in templates:
                 output.append({"message": self._with_opener(templates[text], intent), "trace": trace_id})
 
-        # Stage 2: relation fact synthesis for query intents.
-        if intent == "QUERY" and not output:
+        # Stage 2: relation fact synthesis for query/assert/unknown intents.
+        if intent in ("QUERY", "ASSERT", "UNKNOWN") and not output:
             synthesized = self._synthesize_from_facts(facts or [], original_text)
             if synthesized:
                 output.append({"message": self._with_opener(synthesized, intent), "trace": "relation-synthesis"})
@@ -114,21 +114,31 @@ class Verbalizer:
 
         q = original_text.lower().strip(" ?")
         focused = []
+
         for fact in reversed(relations):
             text = fact.get("text", "")
             subj = self._slot(text, "subject")
             obj = self._slot(text, "object")
-            if q and (subj.lower() in q or obj.lower() in q):
+            if q and (
+                subj.lower() in q
+                or obj.lower() in q
+                or any(word in q for word in subj.lower().split("-"))
+                or any(word in q for word in obj.lower().split("-"))
+            ):
                 focused.append((subj, self._slot(text, "predicate"), obj))
             elif not q:
                 focused.append((subj, self._slot(text, "predicate"), obj))
-            if len(focused) >= 3:
+            if len(focused) >= 4:
                 break
 
         if not focused:
-            for fact in reversed(relations[-3:]):
+            for fact in reversed(relations[-4:]):
                 text = fact.get("text", "")
-                focused.append((self._slot(text, "subject"), self._slot(text, "predicate"), self._slot(text, "object")))
+                focused.append((
+                    self._slot(text, "subject"),
+                    self._slot(text, "predicate"),
+                    self._slot(text, "object"),
+                ))
 
         parts = []
         for s, p, o in focused:
