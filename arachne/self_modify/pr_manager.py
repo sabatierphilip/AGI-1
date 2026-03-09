@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import base64
 import os
+from datetime import datetime
+from pathlib import Path
+
 import requests
 
 
@@ -8,14 +12,66 @@ class PRManager:
     def __init__(self, repo: str) -> None:
         self.repo = repo
         self.token = os.environ.get("GITHUB_TOKEN", "")
+        self.headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json"}
 
-    def open_pr(self, title: str, body: str, head: str, base: str = "main") -> dict:
+    def open_pr(self, title: str, body: str, rulebase_path: str | Path = "arachne/rulebase.clp") -> dict:
         if not self.token:
-            return {"status": "skipped", "reason": "missing GITHUB_TOKEN"}
-        response = requests.post(
-            f"https://api.github.com/repos/{self.repo}/pulls",
-            headers={"Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json"},
-            json={"title": title, "body": body, "head": head, "base": base},
-            timeout=15,
-        )
-        return {"status": response.status_code, "payload": response.json()}
+            return {"status": "skipped", "step": "auth", "reason": "missing GITHUB_TOKEN"}
+
+        try:
+            ref_res = requests.get(
+                f"https://api.github.com/repos/{self.repo}/git/refs/heads/main",
+                headers=self.headers,
+                timeout=15,
+            )
+            if ref_res.status_code >= 300:
+                return {"status": "failed", "step": "get_main_sha", "reason": ref_res.text}
+            base_sha = ref_res.json().get("object", {}).get("sha")
+
+            branch = f"arachne-rule-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+            create_branch = requests.post(
+                f"https://api.github.com/repos/{self.repo}/git/refs",
+                headers=self.headers,
+                json={"ref": f"refs/heads/{branch}", "sha": base_sha},
+                timeout=15,
+            )
+            if create_branch.status_code >= 300:
+                return {"status": "failed", "step": "create_branch", "reason": create_branch.text}
+
+            content_res = requests.get(
+                f"https://api.github.com/repos/{self.repo}/contents/arachne/rulebase.clp",
+                headers=self.headers,
+                params={"ref": "main"},
+                timeout=15,
+            )
+            if content_res.status_code >= 300:
+                return {"status": "failed", "step": "get_rulebase_blob", "reason": content_res.text}
+            blob_sha = content_res.json().get("sha")
+
+            raw = Path(rulebase_path).read_text(encoding="utf-8")
+            encoded = base64.b64encode(raw.encode("utf-8")).decode("utf-8")
+            commit_res = requests.put(
+                f"https://api.github.com/repos/{self.repo}/contents/arachne/rulebase.clp",
+                headers=self.headers,
+                json={
+                    "message": title,
+                    "content": encoded,
+                    "sha": blob_sha,
+                    "branch": branch,
+                },
+                timeout=15,
+            )
+            if commit_res.status_code >= 300:
+                return {"status": "failed", "step": "commit_rulebase", "reason": commit_res.text}
+
+            pr_res = requests.post(
+                f"https://api.github.com/repos/{self.repo}/pulls",
+                headers=self.headers,
+                json={"title": title, "body": body, "head": branch, "base": "main"},
+                timeout=15,
+            )
+            if pr_res.status_code >= 300:
+                return {"status": "failed", "step": "open_pr", "reason": pr_res.text}
+            return {"status": "ok", "step": "done", "payload": pr_res.json()}
+        except Exception as exc:
+            return {"status": "failed", "step": "exception", "reason": str(exc)}

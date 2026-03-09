@@ -2,24 +2,40 @@
 <html>
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ARACHNE</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <div id="container">
-    <div id="chat-panel">
+    <section id="chat-panel">
       <div id="chat-log"></div>
+      <div id="typing" class="hidden"><span></span><span></span><span></span></div>
       <div id="input-row">
-        <input id="chat-input" placeholder="Enter message" />
+        <input id="chat-input" placeholder="Enter message — ARACHNE is listening" />
         <button id="send">Send</button>
       </div>
-    </div>
-    <div id="rule-panel">
-      <h3>Live Rule Base</h3>
-      <ul id="rule-list"></ul>
-    </div>
+    </section>
+    <section id="right-panel">
+      <div id="rule-panel">
+        <h3 id="rule-header">LIVE RULE BASE <span class="dot pulse"></span></h3>
+        <ul id="rule-list"></ul>
+      </div>
+      <div id="telemetry-panel">
+        <div id="stats-grid">
+          <div class="stat"><label>RULES LOADED</label><strong id="rules-loaded">0</strong></div>
+          <div class="stat"><label>ILP EVENTS</label><strong id="ilp-events">0</strong></div>
+          <div class="stat"><label>SOURCES ACTIVE</label><strong id="sources-active">0</strong></div>
+          <div class="stat"><label>WATCHDOG</label><strong id="watchdog">0s</strong></div>
+        </div>
+        <div id="induction-log"></div>
+      </div>
+    </section>
   </div>
-  <div id="status-bar"></div>
+  <div id="status-bar"><span>ARACHNE v1.0 | CLIPS+NARS+ILP+BERT</span><span id="connection"></span></div>
   <script src="/static/app.js"></script>
 </body>
 </html>

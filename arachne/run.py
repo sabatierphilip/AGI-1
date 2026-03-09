@@ -3,8 +3,12 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
+import time
 import webbrowser
+from datetime import datetime
 from pathlib import Path
+
+import requests
 
 from benchmarks.imo_suite import maybe_write_gate, run_imo_suite
 from engine.bert_parser import BertParser
@@ -24,6 +28,7 @@ BASE = Path(__file__).resolve().parent
 class ArachneState:
     def __init__(self) -> None:
         self.nars = NARSMemory(threshold=0.6)
+        self.nars.load(BASE / "nars_memory.json")
         self.clips = ClipsEngine(BASE / "rulebase.clp", self.nars)
         self.parser = BertParser()
         self.verbalizer = Verbalizer()
@@ -38,21 +43,21 @@ class ArachneState:
         def on_event(evt: InductionEvent) -> None:
             self.ilp_events += 1
             self.last_inductions.append(evt)
+            self.last_inductions = self.last_inductions[-20:]
             self.new_rule_flash = 3
-            title = f"[ARACHNE] Rule induction: {evt.signature}"
-            body = (
-                f"Pattern triggered induction: {evt.signature}\n"
-                f"Support count: {evt.support}\n"
-                f"NARS confidence: {evt.confidence}\n"
-                f"Accepted: {evt.accepted}\n\n"
-                f"Working memory sample:\n{json.dumps(self.clips.fetch_facts()[:10], indent=2)}\n\n"
-                f"Git diff:\n{git_diff()}"
-            )
-            print(title)
-            print(body[:600])
+            print(f"[ARACHNE] Rule induction: {evt.signature} support={evt.support} accepted={evt.accepted}")
+            print(git_diff()[:500])
 
-        self.ilp = ILPEngine(self.clips.fetch_facts, self.clips.add_rule_runtime, on_event)
+        self.ilp = ILPEngine(self.clips.fetch_facts, self.clips.add_rule_runtime, on_event, fetch_rules=self.clips.fetch_rules)
         self.ilp.start()
+
+    def stop(self) -> None:
+        self.ilp.stop()
+        self.nars.save(BASE / "nars_memory.json")
+
+    @staticmethod
+    def _sanitize_value(text: str) -> str:
+        return text.replace('"', "'").replace("\\", "").strip()[:200]
 
     def _ingest_source_facts(self, entities: list[str]) -> None:
         for ent in entities[:2]:
@@ -64,20 +69,32 @@ class ArachneState:
                 self._assert_relation_fact(fact)
 
     def _assert_relation_fact(self, fact: dict) -> None:
+        subject = self._sanitize_value(str(fact["subject"]))
+        predicate = self._sanitize_value(str(fact["predicate"]))
+        obj = self._sanitize_value(str(fact["object"]))
         expr = (
-            f'(relation (subject "{fact["subject"]}") (predicate "{fact["predicate"]}") '
-            f'(object "{fact["object"]}") (confidence {round(float(fact["confidence"]), 2)}))'
+            f'(relation (subject "{subject}") (predicate "{predicate}") '
+            f'(object "{obj}") (confidence {round(float(fact["confidence"]), 2)}))'
         )
         self.clips.assert_fact(expr, confidence=fact["confidence"], source=fact["source"])
 
+    def _poll_watchdog(self) -> None:
+        try:
+            res = requests.get("http://127.0.0.1:9999/status", timeout=2)
+            if res.ok:
+                self.watchdog_seconds = int(res.json().get("seconds_remaining", self.watchdog_seconds))
+        except Exception:
+            pass
+
     def handle_message(self, message: str) -> dict:
-        parsed = self.parser.parse(message)
-        self.clips.assert_fact(f'(intent (type "{parsed.intent}") (text "{message}"))', confidence=0.8)
+        safe_message = self._sanitize_value(message)
+        parsed = self.parser.parse(safe_message)
+        self.clips.assert_fact(f'(intent (type "{parsed.intent}") (text "{safe_message}"))', confidence=0.8)
         for triple in parsed.triples:
-            expr = (
-                f'(relation (subject "{triple["subject"]}") (predicate "{triple["predicate"]}") '
-                f'(object "{triple["object"]}") (confidence 0.7))'
-            )
+            s = self._sanitize_value(triple["subject"])
+            p = self._sanitize_value(triple["predicate"])
+            o = self._sanitize_value(triple["object"])
+            expr = f'(relation (subject "{s}") (predicate "{p}") (object "{o}") (confidence 0.7))'
             self.clips.assert_fact(expr, confidence=0.7)
         try:
             self._ingest_source_facts(parsed.entities)
@@ -85,24 +102,46 @@ class ArachneState:
             pass
         self.clips.run(200)
 
+        all_facts = self.clips.fetch_facts()
         conclusions = []
         templates = {}
-        for fact in self.clips.fetch_facts():
+        relation_facts = []
+        for fact in all_facts:
             txt = fact["text"]
             if txt.startswith("(conclusion"):
                 text = txt.split('(text "', 1)[1].split('"', 1)[0] if '(text "' in txt else txt
                 trace = txt.split('(trace-id "', 1)[1].split('"', 1)[0] if '(trace-id "' in txt else "unknown"
                 conclusions.append({"text": text, "trace-id": trace})
-            if txt.startswith("(verbalization-template"):
+            elif txt.startswith("(verbalization-template"):
                 p = txt.split('(pattern "', 1)[1].split('"', 1)[0]
                 t = txt.split('(template "', 1)[1].rsplit('")', 1)[0]
                 templates[p] = t
-        messages = self.verbalizer.verbalize(conclusions[-3:] if conclusions else [{"text": "no-conclusion", "trace-id": "none"}], templates)
+            elif txt.startswith("(relation"):
+                relation_facts.append(fact)
+
+        messages = self.verbalizer.verbalize(
+            conclusions[-3:],
+            templates,
+            facts=relation_facts,
+            intent=parsed.intent,
+            original_text=safe_message,
+        )
+        self._poll_watchdog()
         self.new_rule_flash = max(0, self.new_rule_flash - 1)
         return {"messages": messages, "intent": parsed.intent, "triples": parsed.triples}
 
     def snapshot(self) -> dict:
-        rules = self.clips.fetch_rules()
+        self._poll_watchdog()
+        rules = sorted(self.clips.fetch_rules(), key=lambda r: r.get("confidence", 0), reverse=True)
+        induction_log = [
+            {
+                "ts": datetime.utcnow().isoformat(timespec="seconds"),
+                "signature": e.signature,
+                "support": e.support,
+                "accepted": e.accepted,
+            }
+            for e in self.last_inductions[-3:]
+        ]
         return {
             "rule_count": len(rules),
             "ilp_events": self.ilp_events,
@@ -110,6 +149,7 @@ class ArachneState:
             "watchdog_seconds": self.watchdog_seconds,
             "rules": rules[:200],
             "new_rule_flash": self.new_rule_flash,
+            "induction_log": induction_log,
         }
 
 
@@ -117,22 +157,50 @@ def start_watchdog() -> subprocess.Popen:
     return subprocess.Popen(["python", "watchdog.py"], cwd=str(BASE))
 
 
+def _ensure_readme() -> None:
+    readme = BASE / "README.md"
+    if readme.exists():
+        return
+    readme.write_text(
+        "# ARACHNE\n\n"
+        "Start with `python run.py`.\n"
+        "Watchdog heartbeat endpoint: `GET http://127.0.0.1:9999/ping`\n"
+        "Status endpoint: `GET http://127.0.0.1:9999/status`.\n",
+        encoding="utf-8",
+    )
+
+
+def _print_banner(state: ArachneState, watchdog_pid: int) -> None:
+    snap = state.snapshot()
+    print("┌──────────────────────────────────────────────────────────────┐")
+    print("│ ARACHNE v1.0 Startup                                         │")
+    print(f"│ rules loaded: {snap['rule_count']:<47}│")
+    print(f"│ sources connected: {','.join(state.sources_active):<41}│")
+    print(f"│ watchdog pid: {watchdog_pid:<48}│")
+    print("│ url: http://localhost:5000                                   │")
+    print("└──────────────────────────────────────────────────────────────┘")
+
+
 def main() -> None:
-    score = run_imo_suite(lambda prompt: "not" not in prompt.lower())
+    score = run_imo_suite(None)
     maybe_write_gate(score, BASE / "imo_gate.json")
+    _ensure_readme()
 
     watchdog_proc = start_watchdog()
     state = ArachneState()
-
-    print("=== ARACHNE Startup Report ===")
-    print(f"rules_loaded={state.snapshot()['rule_count']}")
-    print(f"data_sources_connected={','.join(state.sources_active)}")
-    print(f"watchdog_pid={watchdog_proc.pid}")
-
+    _print_banner(state, watchdog_proc.pid)
     app = create_app(state)
 
     threading.Timer(1.5, lambda: webbrowser.open("http://localhost:5000")).start()
-    app.run(host="0.0.0.0", port=5000)
+    try:
+        app.run(host="0.0.0.0", port=5000)
+    except KeyboardInterrupt:
+        print("ARACHNE shutdown cleanly")
+    finally:
+        state.stop()
+        if watchdog_proc.poll() is None:
+            watchdog_proc.terminate()
+            time.sleep(0.2)
 
 
 if __name__ == "__main__":

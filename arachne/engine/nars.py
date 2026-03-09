@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, asdict
+from pathlib import Path
 from typing import Dict, Tuple
 
 
@@ -49,3 +51,22 @@ class NARSMemory:
 
     def all_scores(self) -> Dict[str, TruthValue]:
         return self._store
+
+    def save(self, path: str | Path) -> None:
+        target = Path(path)
+        payload = {k: asdict(v) for k, v in self._store.items()}
+        target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def load(self, path: str | Path) -> None:
+        target = Path(path)
+        if not target.exists():
+            return
+        raw = json.loads(target.read_text(encoding="utf-8"))
+        self._store = {
+            k: TruthValue(
+                frequency=float(v.get("frequency", 0.5)),
+                confidence=float(v.get("confidence", 0.5)),
+                source=v.get("source", "internal"),
+            )
+            for k, v in raw.items()
+        }
