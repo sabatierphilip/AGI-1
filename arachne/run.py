@@ -1,14 +1,50 @@
-from __future__ import annotations
+import importlib
+import subprocess
+import sys
+from pathlib import Path
+
+
+def _bootstrap() -> None:
+    required = {
+        "flask": "Flask==3.0.3",
+        "clips": "clipspy==1.0.0",
+        "transformers": "transformers==4.43.4",
+        "torch": "torch==2.3.1",
+        "requests": "requests==2.32.3",
+        "nltk": "nltk==3.9.1",
+        "yaml": "PyYAML==6.0.2",
+        "huggingface_hub": "huggingface-hub>=0.23.0",
+        "safetensors": "safetensors>=0.4.0",
+    }
+    missing = []
+    for module, package in required.items():
+        try:
+            importlib.import_module(module)
+        except ImportError:
+            missing.append(package)
+    if missing:
+        print(f"[ARACHNE] Installing {len(missing)} missing packages...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", *missing])
+        print("[ARACHNE] Dependencies ready.")
+
+
+_bootstrap()
 
 import json
-import subprocess
+import os
 import threading
 import time
 import webbrowser
 from datetime import datetime
-from pathlib import Path
 
+import nltk
 import requests
+
+for _corpus in ("wordnet", "omw-1.4"):
+    try:
+        nltk.data.find(f"corpora/{_corpus}")
+    except LookupError:
+        nltk.download(_corpus, quiet=True)
 
 from benchmarks.imo_suite import maybe_write_gate, run_imo_suite
 from engine.bert_parser import BertParser
@@ -18,6 +54,7 @@ from engine.nars import NARSMemory
 from engine.verbalizer import Verbalizer
 from interface.app import create_app
 from self_modify.diff_generator import git_diff
+from self_modify.pr_manager import PRManager
 from sources.conceptnet import enrich_concept
 from sources.wikidata import query_entity_relations
 from sources.wordnet import lexical_relations
@@ -40,16 +77,68 @@ class ArachneState:
         self._start_ilp()
 
     def _start_ilp(self) -> None:
-        def on_event(evt: InductionEvent) -> None:
-            self.ilp_events += 1
-            self.last_inductions.append(evt)
-            self.last_inductions = self.last_inductions[-20:]
-            self.new_rule_flash = 3
-            print(f"[ARACHNE] Rule induction: {evt.signature} support={evt.support} accepted={evt.accepted}")
-            print(git_diff()[:500])
+        pending_batch: list[InductionEvent] = []
+        batch_lock = threading.Lock()
 
-        self.ilp = ILPEngine(self.clips.fetch_facts, self.clips.add_rule_runtime, on_event, fetch_rules=self.clips.fetch_rules)
+        def on_event(evt: InductionEvent) -> None:
+            with batch_lock:
+                self.ilp_events += 1
+                self.last_inductions.append(evt)
+                self.last_inductions = self.last_inductions[-20:]
+                pending_batch.append(evt)
+                self.new_rule_flash = min(self.new_rule_flash + 1, 10)
+
+        def flush_batch() -> None:
+            while not self.ilp.stop_event.is_set():
+                time.sleep(6)
+                with batch_lock:
+                    if not pending_batch:
+                        continue
+                    accepted = [e for e in pending_batch if e.accepted]
+                    all_events = list(pending_batch)
+                    pending_batch.clear()
+
+                if not accepted:
+                    continue
+
+                rule_lines = []
+                for i, evt in enumerate(accepted, 1):
+                    rule_lines.append(
+                        f"Rule {i}: {evt.signature}\n"
+                        f"  Support: {evt.support} | Confidence: {evt.confidence:.2f}"
+                    )
+                body = (
+                    f"Batch induction — {len(accepted)} rule(s) accepted "
+                    f"({len(all_events)} total candidates)\n\n"
+                    + "\n\n".join(rule_lines)
+                    + "\n\nWorking memory snapshot:\n"
+                    + json.dumps(self.clips.fetch_facts()[:10], indent=2)
+                    + f"\n\nGit diff:\n{git_diff()}"
+                )
+                title = (
+                    f"[ARACHNE] Batch induction: {len(accepted)} rule(s) — "
+                    + ", ".join(e.signature for e in accepted[:3])
+                    + ("..." if len(accepted) > 3 else "")
+                )
+                repo = os.environ.get("GITHUB_REPOSITORY", "")
+                if repo:
+                    try:
+                        pr = PRManager(repo)
+                        result = pr.open_pr(title, body, rulebase_path=str(BASE / "rulebase.clp"))
+                        print(f"[ARACHNE] PR result: {result.get('status')} step={result.get('step')}")
+                    except Exception as exc:
+                        print(f"[ARACHNE] PR publish failed: {exc}")
+                else:
+                    print(f"[ARACHNE] {title}")
+
+        self.ilp = ILPEngine(
+            self.clips.fetch_facts,
+            self.clips.add_rule_runtime,
+            on_event,
+            fetch_rules=self.clips.fetch_rules,
+        )
         self.ilp.start()
+        threading.Thread(target=flush_batch, daemon=True).start()
 
     def stop(self) -> None:
         self.ilp.stop()
@@ -61,12 +150,21 @@ class ArachneState:
 
     def _ingest_source_facts(self, entities: list[str]) -> None:
         for ent in entities[:2]:
-            for fact in query_entity_relations(ent)[:2]:
-                self._assert_relation_fact(fact)
-            for fact in enrich_concept(ent)[:2]:
-                self._assert_relation_fact(fact)
-            for fact in lexical_relations(ent)[:2]:
-                self._assert_relation_fact(fact)
+            try:
+                for fact in query_entity_relations(ent)[:2]:
+                    self._assert_relation_fact(fact)
+            except Exception as exc:
+                print(f"[ARACHNE] Wikidata ingestion failed: {exc}")
+            try:
+                for fact in enrich_concept(ent)[:2]:
+                    self._assert_relation_fact(fact)
+            except Exception as exc:
+                print(f"[ARACHNE] ConceptNet ingestion failed: {exc}")
+            try:
+                for fact in lexical_relations(ent)[:2]:
+                    self._assert_relation_fact(fact)
+            except Exception as exc:
+                print(f"[ARACHNE] WordNet ingestion failed: {exc}")
 
     def _assert_relation_fact(self, fact: dict) -> None:
         subject = self._sanitize_value(str(fact["subject"]))
@@ -83,8 +181,8 @@ class ArachneState:
             res = requests.get("http://127.0.0.1:9999/status", timeout=2)
             if res.ok:
                 self.watchdog_seconds = int(res.json().get("seconds_remaining", self.watchdog_seconds))
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[ARACHNE] Watchdog poll failed: {exc}")
 
     def handle_message(self, message: str) -> dict:
         safe_message = self._sanitize_value(message)
@@ -98,8 +196,8 @@ class ArachneState:
             self.clips.assert_fact(expr, confidence=0.7)
         try:
             self._ingest_source_facts(parsed.entities)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[ARACHNE] Source ingestion failed: {exc}")
         self.clips.run(200)
 
         all_facts = self.clips.fetch_facts()
@@ -154,7 +252,7 @@ class ArachneState:
 
 
 def start_watchdog() -> subprocess.Popen:
-    return subprocess.Popen(["python", "watchdog.py"], cwd=str(BASE))
+    return subprocess.Popen([sys.executable, "watchdog.py"], cwd=str(BASE))
 
 
 def _ensure_readme() -> None:
@@ -182,12 +280,15 @@ def _print_banner(state: ArachneState, watchdog_pid: int) -> None:
 
 
 def main() -> None:
-    score = run_imo_suite(None)
-    maybe_write_gate(score, BASE / "imo_gate.json")
     _ensure_readme()
-
     watchdog_proc = start_watchdog()
+
     state = ArachneState()
+
+    score = run_imo_suite(state)
+    maybe_write_gate(score, BASE / "imo_gate.json")
+    print(f"[ARACHNE] IMO score: {score:.2f} | gate={'OPEN' if score > 0.70 else 'CLOSED'}")
+
     _print_banner(state, watchdog_proc.pid)
     app = create_app(state)
 
