@@ -28,7 +28,8 @@ def query_entity_relations(entity_label: str) -> list[dict]:
         )
         response.raise_for_status()
         rows = response.json().get("results", {}).get("bindings", [])
-    except Exception:
+    except Exception as exc:
+        print(f"[ARACHNE] Wikidata query failed: {exc}")
         return []
 
     facts = []

@@ -6,9 +6,13 @@ BASE_CONFIDENCE = 0.75
 
 
 def enrich_concept(concept: str) -> list[dict]:
-    response = requests.get(f"https://api.conceptnet.io/c/en/{concept}", timeout=10)
-    response.raise_for_status()
-    edges = response.json().get("edges", [])[:10]
+    try:
+        response = requests.get(f"https://api.conceptnet.io/c/en/{concept}", timeout=10)
+        response.raise_for_status()
+        edges = response.json().get("edges", [])[:10]
+    except Exception as exc:
+        print(f"[ARACHNE] ConceptNet query failed: {exc}")
+        return []
     out = []
     for edge in edges:
         rel = edge.get("rel", {}).get("label", "related")
