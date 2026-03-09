@@ -1,7 +1,7 @@
 name: Validate ARACHNE Rule PR
+
 on:
   pull_request:
-    branches: ["*"]
     types: [opened, synchronize, reopened]
 
 permissions:
@@ -11,65 +11,144 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch base branch explicitly
+        run: |
+          git fetch origin ${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}
+          echo "Base SHA: ${{ github.event.pull_request.base.sha }}"
+          echo "Head SHA: ${{ github.event.pull_request.head.sha }}"
+
+      - name: Get changed files
+        id: changed
+        run: |
+          CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }} 2>&1)
+          if [ $? -ne 0 ]; then
+            echo "git diff failed, falling back to HEAD comparison"
+            CHANGED=$(git show --stat --name-only HEAD | grep -v "^$" | tail -n +2 || echo "")
+          fi
+          echo "Changed files:"
+          echo "$CHANGED"
+          echo "CHANGED<<EOF" >> $GITHUB_ENV
+          echo "$CHANGED" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
 
       - name: Reject PRs touching protected files
         run: |
-          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD 2>/dev/null || git diff --name-only HEAD~1 HEAD)
-          echo "Changed files: $CHANGED"
-          for f in watchdog.py validate_pr.yml; do
-            if echo "$CHANGED" | grep -q "$f"; then
-              echo "PROTECTED FILE MODIFIED: $f"
-              exit 1
+          echo "Checking protected files in: $CHANGED"
+          FAILED=0
+          for f in "watchdog.py" "validate_pr.yml"; do
+            if echo "$CHANGED" | grep -qF "$f"; then
+              echo "PROTECTED FILE MODIFIED: $f — manual review required"
+              FAILED=1
             fi
           done
+          if [ "$FAILED" = "1" ]; then
+            exit 1
+          fi
           echo "Protected file check passed"
 
       - name: Check IMO gate for parser modifications
         run: |
-          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD 2>/dev/null || git diff --name-only HEAD~1 HEAD)
-          if echo "$CHANGED" | grep -q "bert_parser.py"; then
-            if [ ! -f arachne/imo_gate.json ]; then
-              echo "Parser modification rejected: IMO gate file missing"
+          if echo "$CHANGED" | grep -qF "bert_parser.py"; then
+            echo "Parser modification detected — checking IMO gate"
+            GATE_FILE=""
+            for p in "arachne/imo_gate.json" "imo_gate.json"; do
+              if [ -f "$p" ]; then
+                GATE_FILE="$p"
+                break
+              fi
+            done
+            if [ -z "$GATE_FILE" ]; then
+              echo "IMO gate file not found — parser modification rejected"
               exit 1
             fi
-            PASSED=$(python3 -c "import json; d=json.load(open('arachne/imo_gate.json')); print(d.get('IMO_THRESHOLD_PASSED', False))" 2>/dev/null || echo "False")
+            PASSED=$(python3 -c "import json; d=json.load(open('$GATE_FILE')); print(str(d.get('IMO_THRESHOLD_PASSED', False)))" 2>/dev/null || echo "False")
+            echo "IMO_THRESHOLD_PASSED=$PASSED"
             if [ "$PASSED" != "True" ]; then
-              echo "Parser modification rejected: IMO threshold not met (score: $PASSED)"
+              echo "Parser modification rejected: IMO threshold not met"
               exit 1
             fi
+            echo "IMO gate open — parser modification allowed"
+          else
+            echo "No parser modification detected — IMO gate check skipped"
           fi
-          echo "IMO gate check passed"
 
-      - name: Install clipspy and validate CLIPS syntax
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install clipspy with dependencies
         run: |
-          pip install clipspy --quiet
-          python3 - <<'EOF'
-          import clips, sys
-          env = clips.Environment()
-          try:
-              import os
-              for path in ["arachne/rulebase.clp", "rulebase.clp"]:
-                  if os.path.exists(path):
-                      env.load(path)
-                      rules = list(env.rules())
-                      print(f"CLIPS syntax valid — {len(rules)} rules loaded from {path}")
-                      sys.exit(0)
-              print("rulebase.clp not found")
-              sys.exit(1)
-          except Exception as e:
-              print(f"CLIPS syntax error: {e}")
-              sys.exit(1)
-          EOF
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential libffi-dev 2>/dev/null || true
+          pip install --upgrade pip --quiet
+          pip install clipspy==1.0.0 --quiet
+          python3 -c "import clips; print(f'clipspy OK: {clips.__version__}')"
 
-      - name: Auto-merge
+      - name: Validate CLIPS rulebase syntax
+        run: |
+          python3 - <<'PYEOF'
+          import clips, sys, os
+
+          env = clips.Environment()
+          rulebase = None
+          for candidate in ["arachne/rulebase.clp", "rulebase.clp", "AGI-1-main/arachne/rulebase.clp"]:
+              if os.path.exists(candidate):
+                  rulebase = candidate
+                  break
+
+          if not rulebase:
+              print("ERROR: rulebase.clp not found in any expected location")
+              print("Files present:", os.listdir("."))
+              sys.exit(1)
+
+          try:
+              env.load(rulebase)
+          except Exception as e:
+              print(f"CLIPS load error: {e}")
+              sys.exit(1)
+
+          rules = list(env.rules())
+          names = [r.name for r in rules]
+          duplicates = [n for n in names if names.count(n) > 1]
+
+          if duplicates:
+              print(f"DUPLICATE RULE NAMES DETECTED: {set(duplicates)}")
+              sys.exit(1)
+
+          print(f"CLIPS syntax valid — {len(rules)} rules loaded from {rulebase}, 0 duplicates")
+          PYEOF
+
+      - name: Auto-merge via GitHub CLI
         if: success()
-        uses: pascalgn/automerge-action@v0.16.3
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MERGE_METHOD: squash
-          MERGE_LABELS: ""
-          UPDATE_METHOD: rebase
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          REPO=${{ github.repository }}
+          echo "Attempting auto-merge of PR #$PR_NUMBER in $REPO"
+
+          # Enable auto-merge via gh CLI — more reliable than the action
+          gh pr merge "$PR_NUMBER" \
+            --repo "$REPO" \
+            --squash \
+            --auto \
+            --subject "ARACHNE rule induction merge — PR #$PR_NUMBER" \
+            --delete-branch \
+            2>&1 || {
+              echo "Auto-merge flag failed — attempting direct merge"
+              gh pr merge "$PR_NUMBER" \
+                --repo "$REPO" \
+                --squash \
+                --subject "ARACHNE rule induction merge — PR #$PR_NUMBER" \
+                --delete-branch \
+                2>&1 || echo "Direct merge also failed — PR remains open for manual merge"
+            }
