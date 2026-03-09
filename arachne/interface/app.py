@@ -14,6 +14,25 @@ def create_app(state):
     def api_state():
         return jsonify(state.snapshot())
 
+    @app.post("/api/pr-test")
+    def api_pr_test():
+        import os
+        from pathlib import Path
+
+        from self_modify.pr_manager import PRManager
+
+        repo = os.environ.get("GITHUB_REPOSITORY", "")
+        if not repo:
+            return jsonify({"error": "GITHUB_REPOSITORY not set"})
+
+        pr = PRManager(repo)
+        result = pr.open_pr(
+            title="[ARACHNE] PR connectivity test",
+            body="This is an automated connectivity test from ARACHNE. Safe to close.",
+            rulebase_path=str(Path(__file__).resolve().parent.parent / "rulebase.clp"),
+        )
+        return jsonify(result)
+
     @app.post("/api/chat")
     def api_chat():
         msg = request.json.get("message", "")

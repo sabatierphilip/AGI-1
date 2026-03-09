@@ -91,6 +91,8 @@ class ArachneState:
         def flush_batch() -> None:
             while not self.ilp.stop_event.is_set():
                 time.sleep(6)
+                accepted = []
+                all_events = []
                 with batch_lock:
                     if not pending_batch:
                         continue
@@ -107,14 +109,15 @@ class ArachneState:
                         f"Rule {i}: {evt.signature}\n"
                         f"  Support: {evt.support} | Confidence: {evt.confidence:.2f}"
                     )
+                wm_sample = json.dumps(self.clips.fetch_facts()[:10], indent=2)[:3000]
+                diff_sample = git_diff()[:4000]
                 body = (
                     f"Batch induction — {len(accepted)} rule(s) accepted "
                     f"({len(all_events)} total candidates)\n\n"
                     + "\n\n".join(rule_lines)
-                    + "\n\nWorking memory snapshot:\n"
-                    + json.dumps(self.clips.fetch_facts()[:10], indent=2)
-                    + f"\n\nGit diff:\n{git_diff()}"
-                )
+                    + f"\n\nWorking memory snapshot (truncated):\n{wm_sample}"
+                    + f"\n\nGit diff (truncated):\n{diff_sample}"
+                )[:60000]
                 title = (
                     f"[ARACHNE] Batch induction: {len(accepted)} rule(s) — "
                     + ", ".join(e.signature for e in accepted[:3])
@@ -125,7 +128,14 @@ class ArachneState:
                     try:
                         pr = PRManager(repo)
                         result = pr.open_pr(title, body, rulebase_path=str(BASE / "rulebase.clp"))
-                        print(f"[ARACHNE] PR result: {result.get('status')} step={result.get('step')}")
+                        status = result.get("status")
+                        step = result.get("step", "unknown")
+                        reason = result.get("reason", "")
+                        if status == "ok":
+                            pr_url = result.get("payload", {}).get("html_url", "unknown")
+                            print(f"[ARACHNE] PR opened: {pr_url}")
+                        else:
+                            print(f"[ARACHNE] PR failed at step={step}: {reason[:500]}")
                     except Exception as exc:
                         print(f"[ARACHNE] PR publish failed: {exc}")
                 else:

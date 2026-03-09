@@ -61,7 +61,7 @@ class ILPEngine:
                 support = len(pairs)
                 if support >= 3:
                     self._attempt_induction(predicate, pairs, support, batch_events)
-                self.patterns[predicate] = set()
+                    self.patterns[predicate] = set()
 
             if batch_events:
                 self._fire_batch(batch_events)
