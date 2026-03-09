@@ -11,7 +11,6 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,40 +22,77 @@ jobs:
 
       - name: Install clipspy
         run: |
-          pip install clipspy==1.0.0 --quiet
+          sudo apt-get install -y build-essential libffi-dev python3-dev -qq 2>/dev/null || true
+          pip install clipspy==1.0.0 --no-build-isolation --quiet \
+            || pip install clipspy==0.1.1 --quiet \
+            || pip install clipspy --quiet
           python3 -c "import clips; print('clipspy ready')"
 
-      - name: Validate CLIPS rulebase
+      - name: Validate CLIPS rulebase and report stats
+        id: clips_validate
         run: |
           python3 << 'EOF'
-import clips, sys, os
+          import clips, sys, os, json
 
-env = clips.Environment()
-found = None
-for p in ["arachne/rulebase.clp", "rulebase.clp"]:
-    if os.path.exists(p):
-        found = p
-        break
+          env = clips.Environment()
+          found = None
+          for p in ["arachne/rulebase.clp", "rulebase.clp"]:
+              if os.path.exists(p):
+                  found = p
+                  break
 
-if not found:
-    print("rulebase.clp not found. Files:", os.listdir("."))
-    sys.exit(1)
+          if not found:
+              print("rulebase.clp not found")
+              sys.exit(1)
 
-try:
-    env.load(found)
-except Exception as e:
-    print("CLIPS error:", e)
-    sys.exit(1)
+          try:
+              env.load(found)
+          except Exception as e:
+              print(f"CLIPS error: {e}")
+              sys.exit(1)
 
-rules = list(env.rules())
-names = [r.name for r in rules]
-dupes = set(n for n in names if names.count(n) > 1)
-if dupes:
-    print("DUPLICATE RULES:", dupes)
-    sys.exit(1)
+          rules = list(env.rules())
+          names = [r.name for r in rules]
+          dupes = set(n for n in names if names.count(n) > 1)
+          induced = [n for n in names if n.startswith("induced-")]
 
-print(f"OK — {len(rules)} rules, 0 duplicates, path={found}")
-EOF
+          if dupes:
+              print(f"DUPLICATE RULES: {dupes}")
+              sys.exit(1)
+
+          stats = {
+              "total_rules": len(rules),
+              "induced_rules": len(induced),
+              "seeded_rules": len(rules) - len(induced),
+          }
+          print(json.dumps(stats))
+          with open("rule_stats.json", "w") as f:
+              json.dump(stats, f)
+          print(f"OK — {len(rules)} rules ({len(induced)} induced), 0 duplicates")
+          EOF
+
+      - name: Comment rule stats on PR
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f rule_stats.json ]; then
+            TOTAL=$(python3 -c "import json; d=json.load(open('rule_stats.json')); print(d['total_rules'])")
+            INDUCED=$(python3 -c "import json; d=json.load(open('rule_stats.json')); print(d['induced_rules'])")
+            SEEDED=$(python3 -c "import json; d=json.load(open('rule_stats.json')); print(d['seeded_rules'])")
+            gh pr comment ${{ github.event.pull_request.number }} \
+              --repo ${{ github.repository }} \
+              --body "**ARACHNE Rule Induction Report**
+
+          | Metric | Count |
+          |--------|-------|
+          | Total rules | $TOTAL |
+          | Induced (learned) | $INDUCED |
+          | Pre-seeded | $SEEDED |
+
+          ✅ CLIPS syntax valid, 0 duplicates" \
+              2>/dev/null || true
+          fi
 
       - name: Merge PR
         if: success()
@@ -68,4 +104,4 @@ EOF
             --squash \
             --delete-branch \
             --subject "ARACHNE rule induction — PR #${{ github.event.pull_request.number }}" \
-            || echo "Merge failed — PR stays open"
+            || echo "Merge failed — PR stays open for manual merge"

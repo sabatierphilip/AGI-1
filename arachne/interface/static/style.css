@@ -19,7 +19,11 @@ body { background: #0a0b0f; color: #e5e7eb; font-family: 'JetBrains Mono', monos
 #send { background:#00ff88; border:0; color:#07120b; padding:10px 14px; font-weight:700; }
 #right-panel { display:grid; grid-template-rows: 1fr 1fr; }
 #rule-panel { border-bottom:1px solid #1f2937; padding:12px; overflow:auto; }
+#rule-header-row { display:flex; justify-content:space-between; align-items:center; }
 #rule-header { margin:0 0 8px; font-size:15px; }
+#graph-tab { background:#1f2937;color:#e5e7eb;border:0;padding:6px 10px;cursor:pointer; }
+#graph-view { height: 300px; border:1px solid #374151; }
+#graph-svg { width:100%; height:100%; }
 .dot { width:8px; height:8px; border-radius:50%; display:inline-block; background:#00ff88; }
 .pulse { animation:pulse 1.5s infinite; }
 #rule-list { list-style:none; padding:0; margin:0; }
@@ -29,12 +33,19 @@ body { background: #0a0b0f; color: #e5e7eb; font-family: 'JetBrains Mono', monos
 .badge.high { background:#166534; } .badge.mid { background:#854d0e; } .badge.low { background:#7f1d1d; }
 #telemetry-panel { padding:12px; }
 #stats-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+#analytics-panel { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px; }
+#analytics-panel .full { grid-column:1 / span 2; }
 .stat { background:#111827; padding:10px; }
 .stat label{font-size:10px;color:#9ca3af;display:block;} .stat strong{font-size:24px;}
 #watchdog.warn { color:#ef4444; }
 #induction-log { margin-top:10px; height:120px; overflow:auto; font-size:12px; color:#d1d5db; }
 #status-bar { height:28px; background:#070809; display:flex; justify-content:space-between; align-items:center; padding:0 10px; font-size:12px; }
 .conn-dot {width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px;}
+#paste-area { padding: 10px; border-top: 1px solid #1f2937; display: flex; flex-direction: column; gap: 8px; }
+#paste-input { background: #0f1117; color: #e5e7eb; border: 1px solid #374151; padding: 10px; height: 120px; resize: vertical; font-family: 'JetBrains Mono', monospace; font-size: 13px; }
+#paste-input:focus { outline: none; border-color: #00ff88; }
+#ingest-submit { background: #1d4ed8; color: white; border: 0; padding: 8px 14px; cursor: pointer; }
+#ingest-cancel { background: #374151; color: white; border: 0; padding: 8px 14px; cursor: pointer; }
 @keyframes blink { from{opacity:.2} to{opacity:1} }
 @keyframes pulse { 0%{opacity:.5} 100%{opacity:1} }
 @keyframes flashBlue { from{background:#1d4ed8} to{background:#111827} }

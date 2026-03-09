@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, asdict
+import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -11,15 +12,29 @@ class TruthValue:
     frequency: float
     confidence: float
     source: str = "internal"
+    timestamp: float = 0.0
+
+    def __post_init__(self):
+        if self.timestamp == 0.0:
+            self.timestamp = time.time()
+
+    def age_days(self) -> float:
+        return (time.time() - self.timestamp) / 86400.0
+
+    def decayed_confidence(self, decay_rate: float = 0.01) -> float:
+        decay = self.age_days() * decay_rate
+        return max(0.3, self.confidence - decay)
 
     def reinforce(self, amount: float = 0.05) -> "TruthValue":
         self.confidence = min(1.0, self.confidence + amount)
         self.frequency = min(1.0, self.frequency + amount / 2)
+        self.timestamp = time.time()
         return self
 
     def contradict(self, amount: float = 0.1) -> "TruthValue":
         self.confidence = max(0.0, self.confidence - amount)
         self.frequency = max(0.0, self.frequency - amount / 2)
+        self.timestamp = time.time()
         return self
 
 
@@ -46,7 +61,7 @@ class NARSMemory:
 
     def gate_rule(self, signature: str, base_confidence: float) -> Tuple[bool, TruthValue]:
         tv = self._store.setdefault(signature, TruthValue(0.5, base_confidence, "ilp"))
-        accepted = tv.confidence >= self.threshold
+        accepted = tv.decayed_confidence() >= self.threshold
         return accepted, tv
 
     def all_scores(self) -> Dict[str, TruthValue]:
@@ -67,6 +82,7 @@ class NARSMemory:
                 frequency=float(v.get("frequency", 0.5)),
                 confidence=float(v.get("confidence", 0.5)),
                 source=v.get("source", "internal"),
+                timestamp=float(v.get("timestamp", 0.0)),
             )
             for k, v in raw.items()
         }
